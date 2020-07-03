@@ -30,7 +30,6 @@ type patchSenderIngest struct {
 	compactThreshold uint64
 	cfg              *config.Config
 	context          AgentContext
-	lastConnection   time.Time
 	lastDeltaRemoval time.Time
 	resetIfOffline   time.Duration
 }
@@ -81,15 +80,6 @@ func newPatchSender(entityKey string, context AgentContext, store *delta.Store, 
 
 		resetIfOffline, _ = time.ParseDuration("24h")
 	}
-	now := timeNow()
-	lastSuccess, err := store.LastSuccessSubmission()
-
-	if err != nil {
-		lastSuccess = now
-		if err != delta.ErrNoPreviousSuccessSubmissionTime {
-			pslog.WithError(err).Warn("cannot read previous submission time")
-		}
-	}
 
 	return &patchSenderIngest{
 		entityKey:        entityKey,
@@ -100,8 +90,7 @@ func newPatchSender(entityKey string, context AgentContext, store *delta.Store, 
 		compactEnabled:   context.Config().CompactEnabled,
 		compactThreshold: context.Config().CompactThreshold,
 		cfg:              context.Config(),
-		lastConnection:   lastSuccess,
-		lastDeltaRemoval: now,
+		lastDeltaRemoval: timeNow(),
 		resetIfOffline:   resetIfOffline,
 	}, nil
 }
@@ -119,22 +108,20 @@ func (p *patchSenderIngest) Process() (err error) {
 		return
 	}
 	if len(deltas) == 0 {
-		llog.Debug("Patch sender found no deltas to send.")
+		//llog.Debug("Patch sender found no deltas to send.")
 		// Update the lastConnection time to stop the `agent has been offline`
 		// error from being triggered
-		p.lastConnection = now
+		//p.store.UpdateAndSaveLastSuccessSubmission(timeNow())
 		return nil
 	}
 
-	llog.WithFieldsF(func() logrus.Fields {
-		return logrus.Fields{
-			"lastConnection": p.lastConnection,
-			"currentTime":    now,
-		}
-	}).Debug("Prepare to process deltas.")
-
 	// We reset the deltas if the postDeltas fails after agent has been offline for > 24h
-	longTimeDisconnected := p.lastConnection.Add(p.resetIfOffline).Before(now)
+	lastConn, err := p.store.LastSuccessSubmission()
+	if err != nil {
+		llog.WithError(err).Warn("cannot retrieve last submission time")
+	}
+
+	longTimeDisconnected := lastConn.Add(p.resetIfOffline).Before(now)
 	if longTimeDisconnected && p.lastDeltaRemoval.Add(p.resetIfOffline).Before(now) {
 		llog.WithField("offlineTime", p.resetIfOffline).
 			Info("agent has been offline for too long. Recreating delta store")
@@ -216,17 +203,8 @@ func (p *patchSenderIngest) sendAllDeltas(allDeltas []inventoryapi.RawDeltaBlock
 			return err
 		}
 
-		if err = p.store.UpdateAndSaveLastSuccessSubmission(); err != nil {
+		if err = p.store.UpdateAndSaveLastSuccessSubmission(timeNow()); err != nil {
 			llog.WithError(err).Error("can't save submission time")
-		}
-
-		p.lastConnection, err = p.store.LastSuccessSubmission()
-
-		if err != nil {
-			p.lastConnection = currentTime
-			if err != delta.ErrNoPreviousSuccessSubmissionTime {
-				pslog.WithError(err).Warn("cannot read previous submission time")
-			}
 		}
 
 		if postDeltaResults.Reset == inventoryapi.ResetAll {

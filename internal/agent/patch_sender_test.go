@@ -3,6 +3,7 @@
 package agent
 
 import (
+	ctx "context"
 	"fmt"
 	"io/ioutil"
 	"math"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/newrelic/infrastructure-agent/internal/agent/delta"
+	"github.com/newrelic/infrastructure-agent/internal/agent/id"
 	"github.com/newrelic/infrastructure-agent/internal/testhelpers"
 	"github.com/newrelic/infrastructure-agent/pkg/backend/http"
 	"github.com/newrelic/infrastructure-agent/pkg/backend/identityapi"
@@ -20,6 +22,7 @@ import (
 	"github.com/newrelic/infrastructure-agent/pkg/config"
 	"github.com/newrelic/infrastructure-agent/pkg/entity"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 var (
@@ -88,15 +91,14 @@ func TestPatchSender_Process_LongTermOffline(t *testing.T) {
 
 	// And a patch sender that has been disconnected for more than 24 hours
 	resetTime, _ := time.ParseDuration("24h")
-	lastConnection := time.Date(2018, 12, 10, 12, 12, 12, 12, &time.Location{})
+	lastDeltaRemoval := time.Date(2018, 12, 10, 12, 12, 12, 12, &time.Location{})
 	ps := patchSenderIngest{
 		entityKey:        "entityKey",
 		store:            store,
 		context:          &context{agentKey: "agentIdentifier"},
 		postDeltas:       FailingPostDelta,
 		cfg:              &config.Config{},
-		lastConnection:   lastConnection,
-		lastDeltaRemoval: lastConnection,
+		lastDeltaRemoval: lastDeltaRemoval,
 		resetIfOffline:   resetTime,
 	}
 	timeNow = func() time.Time {
@@ -125,7 +127,6 @@ func TestPatchSender_Process_LongTermOffline_ReconnectPlugins(t *testing.T) {
 
 	// And a patch sender that has been disconnected for more than 24 hours, but doesn't need to reset deltas
 	resetTime, _ := time.ParseDuration("24h")
-	lastConnection := time.Date(2018, 12, 10, 12, 12, 12, 12, &time.Location{})
 	lastDeltaRemoval := time.Date(2018, 12, 12, 12, 12, 12, 12, &time.Location{})
 	ps := patchSenderIngest{
 		entityKey: "entityKey",
@@ -136,7 +137,6 @@ func TestPatchSender_Process_LongTermOffline_ReconnectPlugins(t *testing.T) {
 		},
 		postDeltas:       FakePostDelta,
 		cfg:              &config.Config{},
-		lastConnection:   lastConnection,
 		lastDeltaRemoval: lastDeltaRemoval,
 		resetIfOffline:   resetTime,
 	}
@@ -158,25 +158,27 @@ func TestPatchSender_Process_LongTermOffline_ReconnectPlugins(t *testing.T) {
 	assert.Equal(t, 1, plugin.invocations)
 }
 
-func TestPatchSender_Process_LongTermOffline_NoDeltasToPost_UpdateLastConnection(t *testing.T) {
+func TestPatchSender_Process_LongTermOffline_NoDeltasToPost_UpdatelastDeltaRemoval(t *testing.T) {
 	// Given a delta Store
 	dataDir, err := TempDeltaStoreDir()
 	assert.NoError(t, err)
 	store := delta.NewStore(dataDir, "default", maxInventoryDataSize)
+	// When it has successfully submitted some deltas
+	require.NoError(t, store.UpdateAndSaveLastSuccessSubmission(time.Now()))
 
 	// And a patch sender that has been disconnected for less than 24 hours
 	resetTime, _ := time.ParseDuration("24h")
-	lastConnection := time.Date(2018, 12, 12, 0, 12, 12, 12, &time.Location{})
-	ps := patchSenderIngest{
-		entityKey:        "entityKey",
-		store:            store,
-		context:          &context{agentKey: "agentIdentifier"},
-		postDeltas:       FailingPostDelta,
-		cfg:              &config.Config{},
-		lastConnection:   lastConnection,
-		lastDeltaRemoval: lastConnection,
-		resetIfOffline:   resetTime,
+	idCtx := id.NewContext(ctx.Background())
+	aCtx := &context{
+		agentKey: "agentIdentifier",
+		cfg: config.NewTest(""),
 	}
+	psI, err := newPatchSender("entityKey", aCtx, store, "user agent", idCtx.AgentIdnOrEmpty, http.NullHttpClient)
+	require.NoError(t, err)
+	ps := psI.(*patchSenderIngest)
+	ps.postDeltas =       FailingPostDelta
+	ps.lastDeltaRemoval = time.Date(2018, 12, 12, 0, 12, 12, 12, &time.Location{})
+	ps.resetIfOffline =   resetTime
 
 	timeNow = func() time.Time {
 		return time.Date(2018, 12, 12, 12, 12, 12, 12, &time.Location{})
@@ -185,8 +187,11 @@ func TestPatchSender_Process_LongTermOffline_NoDeltasToPost_UpdateLastConnection
 	// When the patch sender tries to process the deltas
 	err = ps.Process()
 
-	// The lastConnection time has been updated
-	assert.True(t, lastConnection.Before(ps.lastConnection))
+	// The lastDeltaRemoval time has been updated
+	var lastConn time.Time
+	lastConn, err = ps.store.LastSuccessSubmission()
+	require.NoError(t, err)
+	assert.True(t, ps.lastDeltaRemoval.Before(lastConn))
 }
 
 func TestPatchSender_Process_LongTermOffline_AlreadyRemoved(t *testing.T) {
@@ -200,7 +205,6 @@ func TestPatchSender_Process_LongTermOffline_AlreadyRemoved(t *testing.T) {
 
 	// And a patch sender that has been disconnected for more than 24 hours
 	resetTime, _ := time.ParseDuration("24h")
-	lastConnection := time.Date(2018, 12, 10, 12, 12, 12, 12, &time.Location{})
 	// But the deltas were already cleaned up less than 24 hours ago
 	lastRemoval := time.Date(2018, 12, 12, 10, 12, 12, 12, &time.Location{})
 	ps := patchSenderIngest{
@@ -209,7 +213,6 @@ func TestPatchSender_Process_LongTermOffline_AlreadyRemoved(t *testing.T) {
 		context:          &context{agentKey: "agentIdentifier"},
 		postDeltas:       FailingPostDelta,
 		cfg:              &config.Config{},
-		lastConnection:   lastConnection,
 		lastDeltaRemoval: lastRemoval,
 		resetIfOffline:   resetTime,
 	}
@@ -240,15 +243,14 @@ func TestPatchSender_Process_ShortTermOffline(t *testing.T) {
 
 	// And a patch sender that has been disconnected for less than 24 hours
 	resetTime, _ := time.ParseDuration("24h")
-	lastConnection := time.Date(2018, 12, 12, 0, 12, 12, 12, &time.Location{})
+	lastDeltaRemoval := time.Date(2018, 12, 12, 0, 12, 12, 12, &time.Location{})
 	ps := patchSenderIngest{
 		entityKey:        "entityKey",
 		store:            store,
 		context:          &context{agentKey: "agentIdentifier"},
 		postDeltas:       FailingPostDelta,
 		cfg:              &config.Config{},
-		lastConnection:   lastConnection,
-		lastDeltaRemoval: lastConnection,
+		lastDeltaRemoval: lastDeltaRemoval,
 		resetIfOffline:   resetTime,
 	}
 
@@ -272,22 +274,24 @@ func TestPatchSender_Process_DividedDeltas(t *testing.T) {
 	// Given a patch sender
 	dataDir, err := TempDeltaStoreDir()
 	assert.NoError(t, err)
+
+	timeNow = func() time.Time {
+		return time.Date(2018, 12, 12, 12, 12, 12, 12, &time.Location{})
+	}
+
 	store := delta.NewStore(dataDir, "localhost", maxInventoryDataSize)
+	require.NoError(t, store.UpdateAndSaveLastSuccessSubmission(timeNow()))
+
 	pdt := testhelpers.NewPostDeltaTracer(maxInventoryDataSize)
 	resetTime, _ := time.ParseDuration("24h")
-	lastConnection := time.Date(2018, 12, 12, 0, 12, 12, 12, &time.Location{})
 	ps := patchSenderIngest{
 		entityKey:        "entityKey",
 		store:            store,
 		context:          &context{agentKey: "agentIdentifier"},
 		postDeltas:       pdt.PostDeltas,
 		cfg:              &config.Config{},
-		lastConnection:   lastConnection,
-		lastDeltaRemoval: lastConnection,
+		lastDeltaRemoval: time.Date(2018, 12, 12, 0, 12, 12, 12, &time.Location{}),
 		resetIfOffline:   resetTime,
-	}
-	timeNow = func() time.Time {
-		return time.Date(2018, 12, 12, 12, 12, 12, 12, &time.Location{})
 	}
 
 	// And a set of normal-sized deltas from different plugins
@@ -319,17 +323,17 @@ func TestPatchSender_Process_DisabledDeltaSplit(t *testing.T) {
 	dataDir, err := TempDeltaStoreDir()
 	assert.NoError(t, err)
 	store := delta.NewStore(dataDir, "localhost", delta.DisableInventorySplit)
+	require.NoError(t, store.UpdateAndSaveLastSuccessSubmission(timeNow()))
 	pdt := testhelpers.NewPostDeltaTracer(math.MaxInt32)
 	resetTime, _ := time.ParseDuration("24h")
-	lastConnection := time.Date(2018, 12, 12, 0, 12, 12, 12, &time.Location{})
+	lastDeltaRemoval := time.Date(2018, 12, 12, 0, 12, 12, 12, &time.Location{})
 	ps := patchSenderIngest{
 		entityKey:        "entityKey",
 		store:            store,
 		context:          &context{agentKey: "agentIdentifier"},
 		postDeltas:       pdt.PostDeltas,
 		cfg:              &config.Config{},
-		lastConnection:   lastConnection,
-		lastDeltaRemoval: lastConnection,
+		lastDeltaRemoval: lastDeltaRemoval,
 		resetIfOffline:   resetTime,
 	}
 
@@ -362,15 +366,14 @@ func TestPatchSender_Process_SingleRequestDeltas(t *testing.T) {
 	store := delta.NewStore(dataDir, "localhost", maxInventoryDataSize)
 	pdt := testhelpers.NewPostDeltaTracer(maxInventoryDataSize)
 	resetTime, _ := time.ParseDuration("24h")
-	lastConnection := time.Date(2018, 12, 12, 0, 12, 12, 12, &time.Location{})
+	lastDeltaRemoval := time.Date(2018, 12, 12, 0, 12, 12, 12, &time.Location{})
 	ps := patchSenderIngest{
 		entityKey:        "entityKey",
 		store:            store,
 		context:          &context{agentKey: "agentIdentifier"},
 		postDeltas:       pdt.PostDeltas,
 		cfg:              &config.Config{},
-		lastConnection:   lastConnection,
-		lastDeltaRemoval: lastConnection,
+		lastDeltaRemoval: lastDeltaRemoval,
 		resetIfOffline:   resetTime,
 	}
 
@@ -404,15 +407,14 @@ func TestPatchSender_Process_CompactEnabled(t *testing.T) {
 	assert.NoError(t, err)
 	store := delta.NewStore(dataDir, "localhost", maxInventoryDataSize)
 	resetTime, _ := time.ParseDuration("24h")
-	lastConnection := time.Date(2018, 12, 12, 0, 12, 12, 12, &time.Location{})
+	lastDeltaRemoval := time.Date(2018, 12, 12, 0, 12, 12, 12, &time.Location{})
 	ps := patchSenderIngest{
 		entityKey:        "entityKey",
 		store:            store,
 		context:          &context{agentKey: "agentIdentifier"},
 		postDeltas:       FakePostDelta,
 		cfg:              &config.Config{},
-		lastConnection:   lastConnection,
-		lastDeltaRemoval: lastConnection,
+		lastDeltaRemoval: lastDeltaRemoval,
 		resetIfOffline:   resetTime,
 		compactEnabled:   true,
 	}
@@ -444,7 +446,7 @@ func TestPatchSender_Process_Reset(t *testing.T) {
 	assert.NoError(t, err)
 	store := delta.NewStore(dataDir, "localhost", maxInventoryDataSize)
 	resetTime, _ := time.ParseDuration("24h")
-	lastConnection := time.Date(2018, 12, 12, 0, 12, 12, 12, &time.Location{})
+	lastDeltaRemoval := time.Date(2018, 12, 12, 0, 12, 12, 12, &time.Location{})
 	ps := patchSenderIngest{
 		entityKey: "entityKey",
 		store:     store,
@@ -452,8 +454,7 @@ func TestPatchSender_Process_Reset(t *testing.T) {
 		// And a backend service that returns ResetAll after being invoked
 		postDeltas:       ResetPostDelta,
 		cfg:              &config.Config{},
-		lastConnection:   lastConnection,
-		lastDeltaRemoval: lastConnection,
+		lastDeltaRemoval: lastDeltaRemoval,
 		resetIfOffline:   resetTime,
 		compactEnabled:   true,
 	}

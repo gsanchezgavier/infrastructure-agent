@@ -116,8 +116,8 @@ func (d *Store) LastSuccessSubmission() (time.Time, error) {
 	return time.Time{}, ErrNoPreviousSuccessSubmissionTime
 }
 
-func (d *Store) UpdateAndSaveLastSuccessSubmission() error {
-	d.updateLastSuccessSubmission(time.Now())
+func (d *Store) UpdateAndSaveLastSuccessSubmission(t time.Time) error {
+	d.updateLastSuccessSubmission(t)
 	return d.saveLastSuccessSubmission()
 }
 

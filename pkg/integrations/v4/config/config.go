@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/shlex"
+	"github.com/newrelic/infrastructure-agent/pkg/integrations/v4/filter"
 )
 
 // ConfigEntry holds an integrations YAML configuration entry. It may define multiple types of tasks
@@ -23,6 +24,7 @@ type ConfigEntry struct {
 	WorkDir      string            `yaml:"working_dir" json:"working_dir"`
 	Labels       map[string]string `yaml:"labels" json:"labels"`
 	When         EnableConditions  `yaml:"when" json:"when"`
+	Filter       filter.Config     `yaml:"filter" json:"filter"`
 
 	// Legacy definition commands
 	Command         string            `yaml:"command" json:"command"`

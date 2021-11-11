@@ -58,7 +58,6 @@ type InstancesLookup struct {
 }
 
 func newDefinitionWithoutLookup(ce config2.ConfigEntry, passthroughEnv []string, configTemplate []byte) (Definition, error) {
-
 	if err := ce.Sanitize(); err != nil {
 		return Definition{}, err
 	}
@@ -82,6 +81,7 @@ func newDefinitionWithoutLookup(ce config2.ConfigEntry, passthroughEnv []string,
 		WhenConditions: conditions(ce.When),
 		ConfigTemplate: configTemplate,
 		newTempFile:    newTempFile,
+		Filter:         ce.Filter,
 	}
 
 	if ce.InventorySource == "" {

@@ -7,6 +7,9 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io/ioutil"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/newrelic/infrastructure-agent/internal/integrations/v4/executor"
@@ -15,12 +18,9 @@ import (
 	cfgreq "github.com/newrelic/infrastructure-agent/pkg/integrations/configrequest/protocol"
 	"github.com/newrelic/infrastructure-agent/pkg/integrations/track/ctx"
 	"github.com/newrelic/infrastructure-agent/pkg/integrations/v4/config"
+	"github.com/newrelic/infrastructure-agent/pkg/integrations/v4/filter"
 	"github.com/newrelic/infrastructure-agent/pkg/log"
 	"github.com/newrelic/infrastructure-agent/pkg/plugins/ids"
-
-	"io/ioutil"
-	"os"
-	"strings"
 )
 
 const (
@@ -45,6 +45,7 @@ type Definition struct {
 	CfgProtocol     *cfgreq.Context
 	runnable        executor.Executor
 	newTempFile     func(template []byte) (string, error)
+	Filter          filter.Config
 }
 
 func (d *Definition) Hash() string {

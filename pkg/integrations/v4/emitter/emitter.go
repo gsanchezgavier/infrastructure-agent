@@ -22,10 +22,8 @@ import (
 	"github.com/newrelic/infrastructure-agent/pkg/log"
 )
 
-var (
-	// internal
-	elog = log.WithComponent("integrations.emitter.Emitter")
-)
+// internal
+var elog = log.WithComponent("integrations.emitter.Emitter")
 
 // Emitter forwards agent/integration payload to  parser & processors (entity ID decoration...)
 type Emitter interface {
@@ -92,6 +90,8 @@ func (e *VersionAwareEmitter) Emit(definition integration.Definition, extraLabel
 		elog.WithError(err).WithFields(fields).Warn("can't parse integration output")
 		return err
 	}
+
+	pluginDataV3 = definition.Filter.SampleFilterer.Filter(pluginDataV3)
 
 	return e.emitV3(fwrequest.NewFwRequestLegacy(definition, extraLabels, entityRewrite, pluginDataV3), protocolVersion)
 }
